@@ -207,31 +207,38 @@ def render_dashboard(user_role: str = "Public", query: str = ""):
 async def handle_automated_ingestion(file: UploadFile = File(...)):
     global doc_id_counter, ALL_DISCOVERED_ROLES, qdrant_db, SYSTEM_LOGS
     
-    # 1. READ PHYSICAL FILE CONTENTS DYNAMICALLY
     contents = await file.read()
     extracted_text = ""
     
-    if file.filename.endswith(".pdf"):
+    # CASE-INSENSITIVE CHECK: Forces uppercase .PDF and .TXT to route properly
+    filename_lower = file.filename.lower()
+    
+    if filename_lower.endswith(".pdf"):
         try:
             pdf_stream = io.BytesIO(contents)
             pdf_reader = PyPDF2.PdfReader(pdf_stream)
-            # Extract text across all pages smoothly
-            extracted_text = " ".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
+            
+            # Extract and clean readable text frames page by page
+            text_slices = []
+            for page in pdf_reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text_slices.append(page_text)
+            
+            extracted_text = " ".join(text_slices)
         except Exception as e:
             return HTMLResponse(content=f"<h3>Error processing PDF structure: {str(e)}</h3>")
     else:
-        # Standard .txt decoding handling
         extracted_text = contents.decode("utf-8", errors="ignore")
         
-    if not extracted_text.strip():
-        return HTMLResponse(content="<h3>Error: Could not extract valid string content from file asset.</h3>")
+    # Validation step to ensure text isn't empty or corrupted machine noise
+    if not extracted_text.strip() or "%PDF" in extracted_text[:10]:
+        return HTMLResponse(content="<h3>Error: Could not extract valid text layer. Ensure your file is a digital document and has a proper extension mapping.</h3>")
 
-    # 2. GENERATIVE BOUNDARY STEP: Let the AI invent the required clearance tags dynamically
     generated_roles = fetch_ai_generated_roles(extracted_text)
     for role in generated_roles:
         ALL_DISCOVERED_ROLES.add(role)
     
-    # 3. INGEST INTO THE VECTOR GRID
     qdrant_db.add(
         collection_name=COLLECTION_NAME,
         documents=[extracted_text],
