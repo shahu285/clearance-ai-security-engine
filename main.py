@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 import requests
 import io
 import os
-import pypdf
+import PyPDF2
 
 COLLECTION_NAME = "secure_vault"
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
@@ -214,7 +214,7 @@ async def handle_automated_ingestion(file: UploadFile = File(...)):
     if file.filename.endswith(".pdf"):
         try:
             pdf_stream = io.BytesIO(contents)
-            pdf_reader = pypdf.PdfReader(pdf_stream)
+            pdf_reader = PyPDF2.PdfReader(pdf_stream)
             # Extract text across all pages smoothly
             extracted_text = " ".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
         except Exception as e:
