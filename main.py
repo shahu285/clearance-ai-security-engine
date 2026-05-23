@@ -1,10 +1,12 @@
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, UploadFile, File
 from fastapi.responses import HTMLResponse
 from qdrant_client import QdrantClient
 from qdrant_client import models
 from contextlib import asynccontextmanager
 import requests
+import io
 import os
+import pypdf
 
 COLLECTION_NAME = "secure_vault"
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
@@ -16,32 +18,19 @@ SYSTEM_LOGS = []
 doc_id_counter = 0
 ALL_DISCOVERED_ROLES = set(["Public"])
 
-# --- ADVANCED LIFECYCLE MANAGEMENT ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    This structure opens the port instantly to satisfy Render's health checkers,
-    then sets up the model weights inside the running server container.
-    """
     global qdrant_db
     print("--- WEB PORT DISCOVERED: ARMED CORE APPLICATION LAUNCH ---")
-    
-    # Initialize the database client
     qdrant_db = QdrantClient(":memory:")
-    
-    print("--- LOADING LIGHTWEIGHT NATIVE ONNX ENGINE ---")
     qdrant_db.set_model(MODEL_NAME)
-    
     qdrant_db.create_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=qdrant_db.get_fastembed_vector_params(),
     )
     print("--- CHANNELS INGESTED NATIVELY: VAULT ONLINE ---")
     yield
-    # Clean up on shutdown if needed
-    pass
 
-# Pass the lifespan context manager to FastAPI
 app = FastAPI(title="ClearanceAI Security Engine", lifespan=lifespan)
 
 # --- THE AUTONOMOUS AI ROLE GENERATOR ---
@@ -62,7 +51,7 @@ def fetch_ai_generated_roles(text: str) -> list:
     Return ONLY a comma-separated list of the roles you generate. Do not write markdown, prose, or explanations.
     
     Text to analyze:
-    "{text}"
+    "{text[:4000]}"
     """
     try:
         response = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
@@ -83,7 +72,6 @@ def render_dashboard(user_role: str = "Public", query: str = ""):
     border_color = "border-zinc-800 bg-zinc-900/20"
     badge_color = "bg-zinc-800 text-zinc-400 border-zinc-700"
 
-    # Edge case: If database is still booting up in the lifespan context
     if qdrant_db is None:
         return "<h3>Vector Vault is initializing model layers. Please refresh in 10 seconds...</h3>"
 
@@ -142,28 +130,39 @@ def render_dashboard(user_role: str = "Public", query: str = ""):
 
         <section class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
             <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-                <h3 class="text-xs font-bold uppercase tracking-wider text-blue-400 mb-3">⚡ Autonomous AI Classification Upload</h3>
-                <form method="post" action="/upload" class="space-y-3">
-                    <textarea name="document_text" rows="3" placeholder="Paste complex raw document strings here..." class="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-xs text-white focus:outline-none focus:border-blue-500" required></textarea>
-                    <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-lg py-2 transition-colors">
-                        Analyze Content & Autonomously Allocate Permissions
+                <h3 class="text-xs font-bold uppercase tracking-wider text-blue-400 mb-3">📁 Autonomous PDF / TXT File Ingestion</h3>
+                <form method="post" action="/upload" enctype="multipart/form-data" class="space-y-4">
+                    <div class="flex items-center justify-center w-full">
+                        <label class="flex flex-col items-center justify-center w-full h-32 border-2 border-zinc-800 border-dashed rounded-lg cursor-pointer bg-zinc-950 hover:bg-zinc-900/50 hover:border-zinc-700 transition-colors">
+                            <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                                <svg class="w-8 h-8 mb-3 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                                <p class="mb-1 text-xs text-zinc-400"><span class="font-semibold">Click to upload</span> security asset</p>
+                                <p class="text-[10px] text-zinc-500">PDF or TXT (Max 5MB)</p>
+                            </div>
+                            <input type="file" name="file" class="hidden" accept=".pdf,.txt" required />
+                        </label>
+                    </div>
+                    <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-lg py-2.5 transition-colors">
+                        Extract Content & Autonomously Allocate Permissions
                     </button>
                 </form>
             </div>
 
-            <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-                <h3 class="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3">🔍 Dynamic Identity Gateway</h3>
-                <form method="get" action="/" class="space-y-3">
-                    <div>
-                        <select name="user_role" class="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2 text-xs text-white">
-                            {role_options_html}
-                        </select>
-                    </div>
-                    <input type="text" name="query" value="{query}" placeholder="Search matching concepts..." class="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2 text-xs text-white"/>
-                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs rounded-lg py-2 transition-colors">
-                        Query Dynamic Index Loop
-                    </button>
-                </form>
+            <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col justify-between">
+                <div>
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3">🔍 Dynamic Identity Gateway</h3>
+                    <form method="get" action="/" class="space-y-3">
+                        <div>
+                            <select name="user_role" class="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2 text-xs text-white">
+                                {role_options_html}
+                            </select>
+                        </div>
+                        <input type="text" name="query" value="{query}" placeholder="Search matching concepts..." class="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2 text-xs text-white"/>
+                        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs rounded-lg py-2.5 transition-colors">
+                            Query Dynamic Index Loop
+                        </button>
+                    </form>
+                </div>
             </div>
         </section>
 
@@ -174,12 +173,12 @@ def render_dashboard(user_role: str = "Public", query: str = ""):
                     {"".join(f'''
                     <div class="p-3 rounded-lg border bg-zinc-950 text-xs border-zinc-800">
                         <div class="flex justify-between font-semibold text-blue-400 mb-1">
-                            <span>Document Chunk #{item["id"]}</span>
+                            <span>Asset: {item["filename"]}</span>
                             <span class="text-purple-400 font-mono">AI Generated Access Tags: {", ".join(item["roles"])}</span>
                         </div>
-                        <p class="text-zinc-400 mt-1">{item["text"]}</p>
+                        <p class="text-zinc-400 mt-1 truncate">{item["text"]}</p>
                     </div>
-                    ''' for item in SYSTEM_LOGS) if SYSTEM_LOGS else '<p class="text-xs text-zinc-600 italic">No contexts populated. Use the ingestion console to autonomously segment documents.</p>'}
+                    ''' for item in SYSTEM_LOGS) if SYSTEM_LOGS else '<p class="text-xs text-zinc-600 italic">No files loaded yet. Drop a PDF or TXT above to run pipeline mechanics.</p>'}
                 </div>
             </div>
 
@@ -205,22 +204,49 @@ def render_dashboard(user_role: str = "Public", query: str = ""):
     """
 
 @app.post("/upload")
-def handle_automated_ingestion(document_text: str = Form(...)):
-    global doc_id_counter, ALL_DISCOVERED_ROLES, qdrant_db
+async def handle_automated_ingestion(file: UploadFile = File(...)):
+    global doc_id_counter, ALL_DISCOVERED_ROLES, qdrant_db, SYSTEM_LOGS
     
-    generated_roles = fetch_ai_generated_roles(document_text)
+    # 1. READ PHYSICAL FILE CONTENTS DYNAMICALLY
+    contents = await file.read()
+    extracted_text = ""
+    
+    if file.filename.endswith(".pdf"):
+        try:
+            pdf_stream = io.BytesIO(contents)
+            pdf_reader = pypdf.PdfReader(pdf_stream)
+            # Extract text across all pages smoothly
+            extracted_text = " ".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
+        except Exception as e:
+            return HTMLResponse(content=f"<h3>Error processing PDF structure: {str(e)}</h3>")
+    else:
+        # Standard .txt decoding handling
+        extracted_text = contents.decode("utf-8", errors="ignore")
+        
+    if not extracted_text.strip():
+        return HTMLResponse(content="<h3>Error: Could not extract valid string content from file asset.</h3>")
+
+    # 2. GENERATIVE BOUNDARY STEP: Let the AI invent the required clearance tags dynamically
+    generated_roles = fetch_ai_generated_roles(extracted_text)
     for role in generated_roles:
         ALL_DISCOVERED_ROLES.add(role)
     
+    # 3. INGEST INTO THE VECTOR GRID
     qdrant_db.add(
         collection_name=COLLECTION_NAME,
-        documents=[document_text],
+        documents=[extracted_text],
         metadata=[{"allowed_roles": generated_roles}],
         ids=[doc_id_counter]
     )
     
-    SYSTEM_LOGS.append({"id": doc_id_counter, "text": document_text, "roles": generated_roles})
+    SYSTEM_LOGS.append({
+        "id": doc_id_counter, 
+        "filename": file.filename, 
+        "text": extracted_text, 
+        "roles": generated_roles
+    })
     doc_id_counter += 1
+    
     return HTMLResponse(content="<script>window.location.href='/';</script>")
 
 if __name__ == "__main__":
