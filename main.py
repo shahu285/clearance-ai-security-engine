@@ -1,35 +1,30 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
-from langchain_huggingface import HuggingFaceEmbeddings
+from qdrant_client import models
 
-# 1. Initialize our App & Zero-Cost Tools
+# 1. Initialize our App & Ultra-Light Native Qdrant Client
 app = FastAPI(title="ClearanceAI Security Engine")
 
-# This boots up a vector database inside your computer's RAM
-# Initialize Qdrant's built-in ultra-light fastembed engine
-# It automatically uses all-MiniLM-L6-v2 at 1/10th the memory cost!
+# This boots up an in-memory vector database with built-in fast inference
 qdrant_db = QdrantClient(":memory:")
-qdrant_db.set_model("BAAI/bge-small-en-v1.5") # A fantastic 384-dimension model that runs natively inside Qdrant at lightning speed
-
-# This downloads a high-performance math model to your CPU to turn text into vectors
-print("--- LOADING LOCAL EMBEDDING TRANSFORMER MODEL (0 COST) ---")
-# Force the embedding engine to run using optimized CPU settings
-embedding_engine = HuggingFaceEmbeddings(
-    model_name="all-MiniLM-L6-v2",
-    model_kwargs={"device": "cpu"}
-)
 
 COLLECTION_NAME = "secure_vault"
 
-# Create the collection structure inside Qdrant
+# We use BAAI/bge-small-en-v1.5: a blazing fast 384-dimension ONNX model (under 70MB!)
+MODEL_NAME = "BAAI/bge-small-en-v1.5"
+
+# Tell Qdrant to set up the embedding engine model internally
+print("--- LOADING LIGHTWEIGHT NATIVE ONNX ENGINE (0 COST) ---")
+qdrant_db.set_model(MODEL_NAME)
+
+# Create the collection structure natively using the model's metadata shape
 qdrant_db.create_collection(
     collection_name=COLLECTION_NAME,
-    vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    vectors_config=qdrant_db.get_fastembed_vector_params(), # Automatically configures size=384, Distance=COSINE
 )
 
-# 2. Ingestion: Adding Data onto Vector Points
+# 2. Ingestion: Seeding the Vault
 RAW_DATA = [
     {
         "text": "The Q3 corporate revenue increased by 14% to $4.2M, driven by rapid cloud infrastructure adoptions.",
@@ -48,73 +43,62 @@ RAW_DATA = [
     }
 ]
 
-# Convert text blocks into mathematical vectors and store them
-points = []
-for index, item in enumerate(RAW_DATA):
-    math_vector = embedding_engine.embed_query(item["text"])
-    
-    points.append(PointStruct(
-        id=index,
-        vector=math_vector,
-        payload={"text": item["text"], "allowed_roles": item["allowed_roles"], "source": item["source"]}
-    ))
+# Using Qdrant's .add() method automatically handles text tokenization, 
+# embedding generation, and payload injection all in a single step!
+docs = [item["text"] for item in RAW_DATA]
+metadata = [{"allowed_roles": item["allowed_roles"], "source": item["source"]} for item in RAW_DATA]
+ids = [i for i in range(len(RAW_DATA))]
 
-qdrant_db.upsert(collection_name=COLLECTION_NAME, points=points)
-print("--- LOCAL VECTOR VAULT ARMED AND SEEDED ---")
+qdrant_db.add(collection_name=COLLECTION_NAME, documents=docs, metadata=metadata, ids=ids)
+print("--- LOCAL VECTOR VAULT ARMED AND SEEDED NATIVELY ---")
 
 
 # 3. Dynamic Interactive Dashboard Route
 @app.get("/", response_class=HTMLResponse)
 def render_dashboard(user_role: str = "HR", query: str = "salary"):
     
-    # AI STEP 1: Turn the user's search query into vector math
-    query_vector = embedding_engine.embed_query(query)
-    
-    # SECURITY GATE STEP 2: Execute a strict RBAC Metadata Filter
-    rbac_metadata_filter = Filter(
+    # SECURITY GATE: Build a strict RBAC Metadata Filter
+    rbac_metadata_filter = models.Filter(
         must=[
-            FieldCondition(
+            models.FieldCondition(
                 key="allowed_roles",
-                match=MatchValue(value=user_role)
+                match=models.MatchValue(value=user_role)
             )
         ]
     )
     
-    # EXECUTE THE SEARCH: Vector Search + Security Check happening together using correct API names
-    search_results = qdrant_db.query_points(
+    # EXECUTE THE SECURE SEARCH
+    # Qdrant's .query() automatically embeds the query text using ONNX and applies the filter
+    search_results = qdrant_db.query(
         collection_name=COLLECTION_NAME,
-        query=query_vector,
+        query_text=query,
         query_filter=rbac_metadata_filter,
         limit=1
     )
 
     # 4. PARSE SEARCH METRICS FOR SCREEN RENDER
-    # 4. PARSE SEARCH METRICS FOR SCREEN RENDER
     security_status = "ENFORCED"
     
-    # CRITICAL FIX: Only accept the match if the AI confidence score is above 0.35 (35%)
-    # Change 0.35 to 0.25
-    if search_results and search_results.points and search_results.points[0].score > 0.25:
-        hit = search_results.points[0]
-        system_response = f"Success! Retrievable contexts found via AI Semantic Search. Source file: '{hit.payload['source']}' (Vector Match Confidence: {round(hit.score * 100, 1)}%)"
-        answer_text = hit.payload["text"]
+    # Qdrant .query() returns a list of QueryResponse objects directly
+    if search_results and search_results[0].score > 0.65: # BGE model scales scores natively between 0.6 and 1.0
+        hit = search_results[0]
+        system_response = f"Success! Retrievable contexts found via AI Semantic Search. Source file: '{hit.metadata['source']}' (Vector Match Confidence: {round(hit.score * 100, 1)}%)"
+        answer_text = hit.document
         border_color = "border-emerald-500 bg-emerald-950/20"
         badge_color = "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
     else:
-        # Check if the text actually existed but was blocked by security
-        unfiltered_check = qdrant_db.query_points(collection_name=COLLECTION_NAME, query=query_vector, limit=3)
-        
-        # Capture the highest score from the unfiltered database to see what's happening
-        highest_raw_score = unfiltered_check.points[0].score if unfiltered_check.points else 0.0
+        # Check if the text actually existed in the unfiltered database space
+        unfiltered_check = qdrant_db.query(collection_name=COLLECTION_NAME, query_text=query, limit=3)
+        highest_raw_score = unfiltered_check[0].score if unfiltered_check else 0.0
         
         breach_attempt = any(
-            item.score > 0.20 and user_role not in item.payload["allowed_roles"] 
-            for item in unfiltered_check.points
+            item.score > 0.65 and user_role not in item.metadata["allowed_roles"] 
+            for item in unfiltered_check
         )
         
         if breach_attempt:
             security_status = "BREACH_BLOCKED"
-            system_response = f"ACCESS DENIED. A restricted document matched your query with a score of {round(highest_raw_score * 100, 1)}%, but your role signature is unauthorized."
+            system_response = f"ACCESS DENIED. A restricted document matched your query with an adversarial score of {round(highest_raw_score * 100, 1)}%, but your role signature is unauthorized."
             answer_text = "ERROR: Document containment protocols active. Vector context propagation aborted."
             border_color = "border-rose-500 bg-rose-950/20"
             badge_color = "bg-rose-500/10 text-rose-400 border-rose-500/30"
@@ -204,7 +188,7 @@ def render_dashboard(user_role: str = "HR", query: str = "salary"):
 
                 <div class="mt-4 text-[10px] font-mono text-zinc-500 flex justify-between border-t border-zinc-800/60 pt-3">
                     <span>Active User Clearance: User.{user_role}</span>
-                    <span>Tokens: 0-cost (Local Embeddings Engine)</span>
+                    <span>Tokens: 0-cost (Qdrant FastEmbed ONNX Engine)</span>
                 </div>
             </div>
         </main>
@@ -216,6 +200,5 @@ def render_dashboard(user_role: str = "HR", query: str = "salary"):
 if __name__ == "__main__":
     import uvicorn
     import os
-
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
