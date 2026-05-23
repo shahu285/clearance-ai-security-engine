@@ -2,41 +2,59 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 from qdrant_client import QdrantClient
 from qdrant_client import models
+from contextlib import asynccontextmanager
 import requests
 import os
 
-app = FastAPI(title="ClearanceAI Security Engine")
-qdrant_db = QdrantClient(":memory:")
 COLLECTION_NAME = "secure_vault"
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# Fallback or Environment setup for Gemini API
-# In Render, add GEMINI_API_KEY to your Environment variables tab
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBkk5x-WUR9In0RvMJ7lvaLpv4oLjfWNrw")
-
-print("--- LOADING LIGHTWEIGHT NATIVE ONNX ENGINE ---")
-qdrant_db.set_model(MODEL_NAME)
-qdrant_db.create_collection(
-    collection_name=COLLECTION_NAME,
-    vectors_config=qdrant_db.get_fastembed_vector_params(),
-)
-
+# Shared Global Objects
+qdrant_db = None
 SYSTEM_LOGS = []
 doc_id_counter = 0
-ALL_DISCOVERED_ROLES = set(["Public"])  # Dynamically tracked roles discovered by AI
+ALL_DISCOVERED_ROLES = set(["Public"])
+
+# --- ADVANCED LIFECYCLE MANAGEMENT ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    This structure opens the port instantly to satisfy Render's health checkers,
+    then sets up the model weights inside the running server container.
+    """
+    global qdrant_db
+    print("--- WEB PORT DISCOVERED: ARMED CORE APPLICATION LAUNCH ---")
+    
+    # Initialize the database client
+    qdrant_db = QdrantClient(":memory:")
+    
+    print("--- LOADING LIGHTWEIGHT NATIVE ONNX ENGINE ---")
+    qdrant_db.set_model(MODEL_NAME)
+    
+    qdrant_db.create_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config=qdrant_db.get_fastembed_vector_params(),
+    )
+    print("--- CHANNELS INGESTED NATIVELY: VAULT ONLINE ---")
+    yield
+    # Clean up on shutdown if needed
+    pass
+
+# Pass the lifespan context manager to FastAPI
+app = FastAPI(title="ClearanceAI Security Engine", lifespan=lifespan)
 
 # --- THE AUTONOMOUS AI ROLE GENERATOR ---
 def fetch_ai_generated_roles(text: str) -> list:
-    """
-    Calls Gemini API to dynamically analyze document text and return 
-    a custom list of security roles required to protect it.
-    """
-    if GEMINI_API_KEY == "AIzaSyBkk5x-WUR9In0RvMJ7lvaLpv4oLjfWNrw" or not GEMINI_API_KEY:
-        # Smart deterministic fallback if API Key isn't provided yet
-        return ["Teacher", "Principal"] if "mark" in text.lower() else ["Executive"]
+    if not GEMINI_API_KEY:
+        text_lower = text.lower()
+        if any(w in text_lower for w in ["mark", "score", "grade", "exam"]):
+            return ["Teacher", "Principal"]
+        if any(w in text_lower for w in ["revenue", "profit", "salary", "bonus"]):
+            return ["Finance", "Executive"]
+        return ["Executive"]
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    
     prompt = f"""
     Analyze the following text fragment and identify what specific professional, corporate, or institutional roles should have access permission to read it.
     Create specific, clean, single-word PascalCase role names (e.g., Student, DepartmentHead, SeniorAuditor, HRManager, Public).
@@ -46,13 +64,10 @@ def fetch_ai_generated_roles(text: str) -> list:
     Text to analyze:
     "{text}"
     """
-    
     try:
         response = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
         ai_output = response.json()['candidates'][0]['content']['parts'][0]['text']
-        # Parse the comma-separated output cleanly
-        roles = [r.strip() for r in ai_output.split(",") if r.strip()]
-        return roles
+        return [r.strip() for r in ai_output.split(",") if r.strip()]
     except Exception as e:
         print(f"API Error: {e}")
         return ["Executive"]
@@ -60,13 +75,17 @@ def fetch_ai_generated_roles(text: str) -> list:
 
 @app.get("/", response_class=HTMLResponse)
 def render_dashboard(user_role: str = "Public", query: str = ""):
-    global ALL_DISCOVERED_ROLES
+    global ALL_DISCOVERED_ROLES, qdrant_db
     search_results = []
     security_status = "READY"
     system_response = "System workspace idling. Submit a semantic query to test real-time security boundaries."
     answer_text = "No runtime query executed."
     border_color = "border-zinc-800 bg-zinc-900/20"
     badge_color = "bg-zinc-800 text-zinc-400 border-zinc-700"
+
+    # Edge case: If database is still booting up in the lifespan context
+    if qdrant_db is None:
+        return "<h3>Vector Vault is initializing model layers. Please refresh in 10 seconds...</h3>"
 
     if query:
         rbac_metadata_filter = models.Filter(
@@ -103,7 +122,6 @@ def render_dashboard(user_role: str = "Public", query: str = ""):
                 security_status = "NO_MATCH"
                 system_response = f"No document fragments matched the semantic thresholds. (Max similarity discovered: {round(highest_raw_score * 100, 1)}%)."
 
-    # Generate dynamic options for the dropdown list based on what the AI has invented so far!
     role_options_html = "".join(
         f'<option value="{role}" {"selected" if user_role==role else ""}>{role} Profile Signature</option>'
         for role in sorted(list(ALL_DISCOVERED_ROLES))
@@ -188,16 +206,12 @@ def render_dashboard(user_role: str = "Public", query: str = ""):
 
 @app.post("/upload")
 def handle_automated_ingestion(document_text: str = Form(...)):
-    global doc_id_counter, ALL_DISCOVERED_ROLES
+    global doc_id_counter, ALL_DISCOVERED_ROLES, qdrant_db
     
-    # 1. GENERATIVE BOUNDARY STEP: Let the AI invent the required clearance tags dynamically!
     generated_roles = fetch_ai_generated_roles(document_text)
-    
-    # Update our global set of tracking profiles so they instantly appear in the user select layout
     for role in generated_roles:
         ALL_DISCOVERED_ROLES.add(role)
     
-    # 2. INGEST INTO THE VECTOR GRID
     qdrant_db.add(
         collection_name=COLLECTION_NAME,
         documents=[document_text],
@@ -207,5 +221,9 @@ def handle_automated_ingestion(document_text: str = Form(...)):
     
     SYSTEM_LOGS.append({"id": doc_id_counter, "text": document_text, "roles": generated_roles})
     doc_id_counter += 1
-    
     return HTMLResponse(content="<script>window.location.href='/';</script>")
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
