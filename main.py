@@ -8,11 +8,18 @@ from langchain_huggingface import HuggingFaceEmbeddings
 app = FastAPI(title="ClearanceAI Security Engine")
 
 # This boots up a vector database inside your computer's RAM
-qdrant_db = QdrantClient(":memory:") 
+# Initialize Qdrant's built-in ultra-light fastembed engine
+# It automatically uses all-MiniLM-L6-v2 at 1/10th the memory cost!
+qdrant_db = QdrantClient(":memory:")
+qdrant_db.set_model("BAAI/bge-small-en-v1.5") # A fantastic 384-dimension model that runs natively inside Qdrant at lightning speed
 
 # This downloads a high-performance math model to your CPU to turn text into vectors
 print("--- LOADING LOCAL EMBEDDING TRANSFORMER MODEL (0 COST) ---")
-embedding_engine = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+# Force the embedding engine to run using optimized CPU settings
+embedding_engine = HuggingFaceEmbeddings(
+    model_name="all-MiniLM-L6-v2",
+    model_kwargs={"device": "cpu"}
+)
 
 COLLECTION_NAME = "secure_vault"
 
