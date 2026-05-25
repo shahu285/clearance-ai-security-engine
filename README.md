@@ -185,7 +185,7 @@ A rules-based classifier would need manual configuration for every new document 
 
 ## 👤 Author
 
-**Shahu Ugale** — Fresher building real AI products in public.
+**Shahu Ugale** | AI Engineer
 
 [LinkedIn](https://www.linkedin.com/in/shahu-ugale/) · [GitHub](https://github.com/shahu285)
 
