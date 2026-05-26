@@ -10,7 +10,7 @@
 
 Standard RAG systems and document vaults have a critical security flaw — when a user queries the vector database, the system blindly pulls matching document fragments based purely on **semantic similarity**, completely ignoring company hierarchy or user access rights.
 
-This means a junior employee could semantically query for "salary information" and receive fragments from a confidential HR payroll sheet — a real, exploitable data leakage vector.
+This means a junior employee could semantically query for "salary information" and receive fragments from a confidential HR payroll sheet — a real, exploitable data leakage .
 
 **ClearanceAI solves this.**
 
